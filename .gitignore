@@ -1,0 +1,14 @@
+# Poetry
+.venv/
+poetry.lock
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+
+# Data/Models (if they are too large for Git)
+data/*.csv
+models/
