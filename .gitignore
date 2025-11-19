@@ -10,5 +10,5 @@ __pycache__/
 .DS_Store
 
 # Data/Models (if they are too large for Git)
-data/*.csv
+data/
 models/
