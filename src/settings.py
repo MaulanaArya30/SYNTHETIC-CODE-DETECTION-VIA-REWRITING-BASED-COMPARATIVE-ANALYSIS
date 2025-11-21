@@ -24,7 +24,7 @@ AI_COLUMN_NAME = 'GPT Answer'
 #training config
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 SIMCSE_EPOCHS = 5
-SIMCSE_BATCH_SIZE = 16
+SIMCSE_BATCH_SIZE = 4#16
 SIMCSE_LR = 1e-4
 
 #rewrite num
