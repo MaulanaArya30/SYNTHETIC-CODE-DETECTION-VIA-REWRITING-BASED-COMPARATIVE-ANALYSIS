@@ -12,3 +12,4 @@ __pycache__/
 # Data/Models (if they are too large for Git)
 data/
 models/*
+!models/.gitkeep
