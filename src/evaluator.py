@@ -177,14 +177,19 @@ def run_evaluation():
             print(f"  F1_Score (Eq 3.8): {f1:.4f}")
 
 
-    # --- Final Report ---
-    print("\n\n--- FINAL EXPERIMENT SUMMARY ---")
-    results_df = pd.DataFrame(final_result)
-    print(results_df.to_string())
-    
-    # Save results to a CSV file
-    results_df.to_csv("./evaluation_results.csv", index=False)
-    print("\nResults saved to 'evaluation_results.csv'")
+    # === FINAL SUMMARY REPORTS ===
+    print("\n\n--- PER-VARIANT RESULTS ---")
+    df_variant = pd.DataFrame(variant_results)
+    print(df_variant.to_string())
+    df_variant.to_csv("./evaluation_variant_results.csv", index=False)
+
+    print("\n\n--- TOTAL RESULTS ---")
+    df_total = pd.DataFrame(final_result)
+    print(df_total.to_string())
+    df_total.to_csv("./evaluation_results.csv", index=False)
+
+    print("\nResults saved to 'evaluation_variant_results.csv' and 'evaluation_results.csv'")
+
 
 if __name__ == "__main__":
     run_evaluation()
