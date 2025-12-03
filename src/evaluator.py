@@ -18,6 +18,7 @@ def run_evaluation():
 
     #result
     final_result = []
+    variant_results = []
 
     #embedding
     for model_name in ['graphcodebert', 'codet5']:
@@ -35,9 +36,9 @@ def run_evaluation():
         for m in settings.NUM_REWRITES:
 
             #all variants
-            synthetic_scores = []
-            non_synthetic_scores = []
-            correct_pairwise = 0
+            total_synthetic_scores = []
+            total_non_synthetic_scores = []
+            total_correct_pairwise = 0
             total_pairwise = 0
 
             print(f'---- Start test on model {model_type} with {m} rewrites ----')
@@ -51,6 +52,13 @@ def run_evaluation():
                 if not paired_data:
                     print(f'Skipping {variant_name} due to an error while loading...')
 
+                #pervarinat
+                synthetic_scores = []
+                non_synthetic_scores = []
+                correct_pairwise = 0
+                pairwise_count = 0
+
+                
                 for (human_code, ai_code) in tqdm(paired_data, desc=f'{variant_name}'):
 
                     #get score
@@ -73,7 +81,44 @@ def run_evaluation():
                     if synthetic_score > non_synthetic_score:
                         correct_pairwise += 1
 
-                
+                #store per variant results
+                total_synthetic_scores.extend(synthetic_scores)
+                total_non_synthetic_scores.extend(non_synthetic_scores)
+                total_pairwise += pairwise_count
+                total_correct_pairwise += correct_pairwise
+
+             #metrics for THIS VARIANT
+                if pairwise_count > 0:
+                    incorrect_pairwise = pairwise_count - correct_pairwise
+
+                    TP = correct_pairwise
+                    TN = correct_pairwise
+                    FP = incorrect_pairwise
+                    FN = incorrect_pairwise
+
+                    labels = [0] * len(non_synthetic_scores) + [1] * len(synthetic_scores)
+                    scores = non_synthetic_scores + synthetic_scores
+
+                    auroc = roc_auc_score(labels, scores) if len(set(labels)) == 2 else 0.0
+                    accuracy = (TP + TN) / (TP + TN + FP + FN)
+                    precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+                    recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+                    f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) else 0
+
+                    # Store per-variant metrics
+                    variant_results.append({
+                        'Model': model_type,
+                        'm': m,
+                        'Variant': variant_name,
+                        'AUROC': auroc,
+                        'Accuracy': accuracy,
+                        'Precision': precision,
+                        'Recall': recall,
+                        'F1_Score': f1
+                    })
+
+
+            #total all variant    
             #evaluation metrics
             #incorrect pairwise
             incorrect_pairwise = total_pairwise - correct_pairwise
@@ -86,7 +131,7 @@ def run_evaluation():
 
             #auroc
             labels = [0] * len(non_synthetic_scores) + [1] * len(synthetic_scores)
-            scores = non_synthetic_scores + synthetic_scores
+            scores = total_non_synthetic_scores  + total_synthetic_scores
             auroc = 0.0
             if len(set(labels)) >> 1: #making sure three's 2 classes
                 auroc = roc_auc_score(labels, scores)
