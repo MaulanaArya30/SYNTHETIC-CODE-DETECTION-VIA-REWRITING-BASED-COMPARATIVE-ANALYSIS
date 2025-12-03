@@ -1,5 +1,5 @@
 from transformers import RobertaTokenizer, T5ForConditionalGeneration
-from src import settings
+import settings
 import torch
 
 class CodeRewriter:
@@ -44,7 +44,7 @@ additional clarifications.
 
         rewritten_codes = []
         for out_id in output_ids:
-            rewritten_text = self.tokenizer.deode(
+            rewritten_text = self.tokenizer.decode(
                 out_id,
                 skip_special_tokens=True,
             )

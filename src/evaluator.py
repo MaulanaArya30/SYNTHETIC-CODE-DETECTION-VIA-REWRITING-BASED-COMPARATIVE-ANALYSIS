@@ -20,8 +20,8 @@ def run_evaluation():
     final_result = []
 
     #embedding
-    for model_type in ['graphcodebert', 'codet5']:
-        model_type = settings.GCB_SIMCSE_PATH if model_type == 'graphcodebert' else settings.CODET5_SIMCSE_PATH
+    for model_name in ['graphcodebert', 'codet5']:
+        model_type = settings.GCB_SIMCSE_PATH if model_name == 'graphcodebert' else settings.CODET5_SIMCSE_PATH
         if not os.path.exists(model_type):
             print('---' * 10)
             print(f'{model_type} not found...')
@@ -29,7 +29,7 @@ def run_evaluation():
             continue
 
         #detector
-        detector = CodeDetector(model_type=model_type)
+        detector = CodeDetector(model_type=model_name)
 
         #rewriter
         for m in settings.NUM_REWRITES:
@@ -47,7 +47,7 @@ def run_evaluation():
                 variant_name = variant_file.split('/')[-1]
                 print(f'--- Processing: {variant_name} ---')
 
-                paired_data = load_paired_dataset(variant_file):
+                paired_data = load_paired_dataset(variant_file)
                 if not paired_data:
                     print(f'Skipping {variant_name} due to an error while loading...')
 

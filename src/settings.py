@@ -10,7 +10,6 @@ CODET5_SIMCSE_PATH = './models/codet5-simcse'
 #graphcodeBERT
 GCB_MODEL_NAME = 'microsoft/graphcodebert-base'
 GCB_SIMCSE_PATH = './models/graphcodebert-simcse'
-
 #dataset
 VARIANT_FILES = [
     'data/test_df.csv'

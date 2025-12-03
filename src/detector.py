@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from transformers import RobertaTokenizer, T5ForConditionalGeneration, RobertaModel
-from src import settings
+import settings
 
 class CodeDetector:
     def __init__(self, model_type):
