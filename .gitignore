@@ -10,6 +10,7 @@ __pycache__/
 .DS_Store
 
 # Data/Models (if they are too large for Git)
-data/
+data/*
+!data/.gitkeep
 models/*
 !models/.gitkeep

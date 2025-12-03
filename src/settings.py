@@ -12,7 +12,17 @@ GCB_MODEL_NAME = 'microsoft/graphcodebert-base'
 GCB_SIMCSE_PATH = './models/graphcodebert-simcse'
 #dataset
 VARIANT_FILES = [
-    'data/test_df.csv'
+    'data/variant_1_full_processed.csv',
+    'data/variant_4_full_processed.csv',
+    'data/variant_5_full_processed.csv',
+    'data/variant_6_full_processed.csv',
+    'data/variant_7_full_processed.csv',
+    'data/variant_8_full_processed.csv',
+    'data/variant_9_full_processed.csv',
+    'data/variant_10_full_processed.csv',
+    'data/variant_11_full_processed.csv',
+    'data/variant_12_full_processed.csv',
+    'data/variant_13_full_processed.csv',
 ]
 CODE_SEARCH_NET = 'Nan-Do/code-search-net-python'
 
