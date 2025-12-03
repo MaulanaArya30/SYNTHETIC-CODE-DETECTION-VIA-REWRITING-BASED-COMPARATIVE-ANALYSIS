@@ -5,6 +5,7 @@ from transformers import RobertaTokenizer, T5ForConditionalGeneration, RobertaMo
 from torch.optim import AdamW
 from tqdm import tqdm
 import argparse
+import os
 
 import settings
 from data_loader import load_simcse_training_data
@@ -68,6 +69,8 @@ def train(model_type):
     else:
         raise ValueError('Invalid model_type. Choose codet5 or graphcodebert')
     
+    os.makedirs(save_path, exist_ok=True)
+
     encoder_model = encoder_model.to(settings.DEVICE)
     encoder_model.train() #with dropout by default
 
@@ -83,8 +86,13 @@ def train(model_type):
 
     optimizer = AdamW(encoder_model.parameters(), lr=settings.SIMCSE_LR)
 
+    epoch_losses = []
+
+
     for epoch in range(settings.SIMCSE_EPOCHS):
         print(f'--- Epoch {epoch+1}/{settings.SIMCSE_EPOCHS} ---')
+        running_loss = 0.0
+        steps = 0
 
         for batch in tqdm(train_loader):
             optimizer.zero_grad()
@@ -108,13 +116,28 @@ def train(model_type):
             loss = constrastive_loss(emb_a, emb_b)
             loss.backward()
             optimizer.step()
-        
-        print(f'Epoch {epoch+1} Loss: {loss.item()}')
 
-    #save encoder
-    print(f'Training complete. Saving to {save_path}...')
+            running_loss += loss.item()
+            steps += 1
+
+        avg_epoch_loss = running_loss / steps
+        epoch_losses.append(avg_epoch_loss)
+        print(f"Epoch {epoch+1} Average Loss: {avg_epoch_loss:.6f}")
+        
+
+    loss_file = os.path.join(save_path, "loss_log.txt")
+    with open(loss_file, "w") as f:
+        for i, l in enumerate(epoch_losses):
+            f.write(f"Epoch {i+1}: {l}\n")
+
+    print(f"\nLoss log saved to {loss_file}")
+
+    print(f"Saving model to {save_path} ...")
     model.save_pretrained(save_path)
     tokenizer.save_pretrained(save_path)
+
+    print(f"===== Training Completed for {model_type.upper()} =====\n")
+
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train SimCSE for CodeT5 or GraphCodeBert")
@@ -122,9 +145,13 @@ if __name__ == "__main__":
         '--model', 
         type=str, 
         required=True, 
-        choices=['codet5', 'graphcodebert'],
+        choices=['codet5', 'graphcodebert', 'all'],
         help="The model architecture to train (as per Table 3.1)"
     )
     args = parser.parse_args()
     
-    train(args.model)
+    if args.model == "all":
+        for m in ["codet5", "graphcodebert"]:
+            train(m)
+    else:
+        train(args.model)
