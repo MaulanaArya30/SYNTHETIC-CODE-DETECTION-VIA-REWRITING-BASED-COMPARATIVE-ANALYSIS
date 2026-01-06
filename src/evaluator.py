@@ -1,194 +1,279 @@
-import pandas as pd
+import os
 from tqdm import tqdm
-from sklearn.metrics import roc_auc_score
+import pandas as pd
+from sklearn.metrics import roc_auc_score, confusion_matrix, precision_recall_curve
+import numpy as np
 
 from data_loader import load_paired_dataset
 from rewriter import CodeRewriter
 from detector import CodeDetector
 import settings
-import os
+
+
+# You can tweak this to fit your VRAM
+BATCH_SIZE_DEF = getattr(settings, "EVAL_BATCH_SIZE", 8)
+
+
+def compute_classification_metrics(non_synth_scores, synth_scores):
+    """
+    non_synth_scores: list[float] scores for human code (label 0)
+    synth_scores: list[float] scores for ai code (label 1)
+    Returns dict with AUROC, Accuracy, Precision, Recall, F1, pairwise_count, correct_pairwise
+    """
+
+    n_pairs = min(len(non_synth_scores), len(synth_scores))
+    
+    if n_pairs == 0:
+        return {
+            "AUROC": 0.0,
+            "Accuracy": 0.0,
+            "Pairwise_Accuracy": 0.0,
+            "Precision": 0.0,
+            "Recall": 0.0,
+            "F1_Score": 0.0,
+            "pairwise_count": 0,
+            "correct_pairwise": 0,
+        }
+    
+    # Truncate to equal length
+    non_synth_scores = non_synth_scores[:n_pairs]
+    synth_scores = synth_scores[:n_pairs]
+    
+    labels = [0] * len(non_synth_scores) + [1] * len(synth_scores)
+    scores = non_synth_scores + synth_scores
+
+    auroc = 0.0
+    if len(set(labels)) == 2:  # Need both classes
+        try:
+            auroc = roc_auc_score(labels, scores)
+        except Exception as e:
+            print(f"Warning: AUROC calculation failed: {e}")
+            auroc = 0.0
+    
+    # === Pairwise Comparison (Core Zero-Shot Method) ===
+    # For each pair, check if AI score > Human score
+    correct_pairwise = sum(1 for h, a in zip(non_synth_scores, synth_scores) if a > h)
+    
+    # Pairwise accuracy (this is your main metric per the proposal)
+    pairwise_accuracy = correct_pairwise / n_pairs if n_pairs > 0 else 0.0
+    
+    # === Confusion Matrix from Pairwise Decisions ===
+    # Each correct pairwise comparison = 1 TP and 1 TN
+    # Each incorrect pairwise comparison = 1 FP and 1 FN
+    TP = correct_pairwise  # AI correctly identified as AI
+    TN = correct_pairwise  # Human correctly identified as Human
+    FP = n_pairs - correct_pairwise  # Human incorrectly identified as AI
+    FN = n_pairs - correct_pairwise  # AI incorrectly identified as Human
+    
+    # === Standard Classification Metrics ===
+    accuracy = (TP + TN) / (TP + TN + FP + FN) if (TP + TN + FP + FN) > 0 else 0.0
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0.0
+    recall = TP / (TP + FN) if (TP + FN) > 0 else 0.0
+    f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+    
+    return {
+        "AUROC": auroc,
+        "Accuracy": accuracy,
+        "Pairwise_Accuracy": pairwise_accuracy,
+        "Precision": precision,
+        "Recall": recall,
+        "F1_Score": f1,
+        "pairwise_count": n_pairs,
+        "correct_pairwise": correct_pairwise,
+    }
 
 
 
 def run_evaluation():
-    print('---Starting Evaluation---')
+    print("--- Starting Evaluation ---")
 
-    #rewriter
+    # initialize rewriter (loads model)
     rewriter = CodeRewriter()
 
-    #result
     final_result = []
     variant_results = []
 
-    #embedding
-    for model_name in ['graphcodebert', 'codet5']:
-        model_type = settings.GCB_SIMCSE_PATH if model_name == 'graphcodebert' else settings.CODET5_SIMCSE_PATH
-        if not os.path.exists(model_type):
-            print('---' * 10)
-            print(f'{model_type} not found...')
-            print('---' * 10)
+    # iterate models you want to test
+    for model_name in ["graphcodebert", "codet5"]:
+        model_path = settings.GCB_SIMCSE_PATH if model_name == "graphcodebert" else settings.CODET5_SIMCSE_PATH
+
+        if not os.path.exists(model_path):
+            print("---" * 10)
+            print(f"{model_path} not found... skipping {model_name}")
+            print("---" * 10)
             continue
 
-        #detector
+        # initialize detector (loads encoder)
         detector = CodeDetector(model_type=model_name)
 
-        #rewriter
         for m in settings.NUM_REWRITES:
+            print("---" * 10)
+            print(f"---- Start test on model {model_path} with {m} rewrites ----")
 
-            #all variants
-            total_synthetic_scores = []
-            total_non_synthetic_scores = []
-            total_correct_pairwise = 0
-            total_pairwise = 0
+            if m >= 8:
+                BATCH_SIZE = BATCH_SIZE_DEF // 4
+                print(f"Using full batch size for m = 8 -> {BATCH_SIZE}")
+            elif m >= 4:
+                BATCH_SIZE = BATCH_SIZE_DEF // 2
+                print(f"Using reduced batch size for m = 4 -> {BATCH_SIZE}")
+            elif m >= 2:
+                BATCH_SIZE = BATCH_SIZE_DEF
+                print(f"Using smaller batch size for m = 2 -> {BATCH_SIZE}")
+            else:
+                # Safety fallback
+                BATCH_SIZE = 8
 
-            print(f'---- Start test on model {model_type} with {m} rewrites ----')
+            # totals across all variants for this (model, m)
+            total_non_synth_scores = []
+            total_synth_scores = []
 
-            #dataset variant
             for variant_file in settings.VARIANT_FILES:
-                variant_name = variant_file.split('/')[-1]
-                print(f'--- Processing: {variant_name} ---')
+                variant_name = os.path.basename(variant_file)
+                print(f"--- Processing: {variant_name} ---")
 
                 paired_data = load_paired_dataset(variant_file)
                 if not paired_data:
-                    print(f'Skipping {variant_name} due to an error while loading...')
+                    print(f"Skipping {variant_name} due to an error while loading...")
+                    continue
 
-                #pervarinat
-                synthetic_scores = []
-                non_synthetic_scores = []
-                correct_pairwise = 0
-                pairwise_count = 0
+                # per-variant accumulation
+                non_synth_scores = []
+                synth_scores = []
 
-                
-                for (human_code, ai_code) in tqdm(paired_data, desc=f'{variant_name}'):
+                # iterate in mini-batches
+                n = len(paired_data)
+                ranges = range(0, n, BATCH_SIZE)
+                for start in tqdm(ranges, desc=f"{variant_name}"):
+                    batch = paired_data[start:start + BATCH_SIZE]
+                    human_batch = [pair[0] for pair in batch]
+                    ai_batch = [pair[1] for pair in batch]
 
-                    #get score
-                    synthetic_score = detector.get_detection_score(
-                        ai_code,
-                        rewriter.generate_rewrites(ai_code, num_rewrites=m)
+                    # generate rewrites in batch (returns list[list[str]])
+                    human_rewrites_batch = rewriter.generate_rewrites_batch(human_batch, m)
+                    ai_rewrites_batch = rewriter.generate_rewrites_batch(ai_batch, m)
+
+                    # Filter out empty rewrite lists
+                    valid_indices = [
+                        i for i in range(len(human_rewrites_batch))
+                        if human_rewrites_batch[i] and ai_rewrites_batch[i]
+                    ]
+
+                    if not valid_indices:
+                        print(f"Warning: Batch {start}-{start+BATCH_SIZE} produced no valid rewrites")
+                        continue
+
+                    # Keep only valid pairs
+                    valid_human_batch = [human_batch[i] for i in valid_indices]
+                    valid_ai_batch = [ai_batch[i] for i in valid_indices]
+                    valid_human_rewrites = [human_rewrites_batch[i] for i in valid_indices]
+                    valid_ai_rewrites = [ai_rewrites_batch[i] for i in valid_indices]
+
+            
+                    # Compute scores
+                    human_scores = detector.get_detection_score_batch(
+                        valid_human_batch, valid_human_rewrites
                     )
-                    non_synthetic_score = detector.get_detection_score(
-                        human_code,
-                        rewriter.generate_rewrites(human_code, num_rewrites=m)
+                    ai_scores = detector.get_detection_score_batch(
+                        valid_ai_batch, valid_ai_rewrites
                     )
-                    #total
-                    synthetic_scores.append(synthetic_score)
-                    non_synthetic_scores.append(non_synthetic_score)
 
-                    #pairwise classification
-                    #total
-                    total_pairwise += 1
-                    #correct
-                    if synthetic_score > non_synthetic_score:
-                        correct_pairwise += 1
+                    non_synth_scores.extend(human_scores)
+                    synth_scores.extend(ai_scores)
 
-                #store per variant results
-                total_synthetic_scores.extend(synthetic_scores)
-                total_non_synthetic_scores.extend(non_synthetic_scores)
-                total_pairwise += pairwise_count
-                total_correct_pairwise += correct_pairwise
+                # Accumulate across variants
+                total_non_synth_scores.extend(non_synth_scores)
+                total_synth_scores.extend(synth_scores)
 
-             #metrics for THIS VARIANT
-                if pairwise_count > 0:
-                    incorrect_pairwise = pairwise_count - correct_pairwise
+                # Compute per-variant metrics
+                if non_synth_scores and synth_scores:
+                    metrics = compute_classification_metrics(non_synth_scores, synth_scores)
 
-                    TP = correct_pairwise
-                    TN = correct_pairwise
-                    FP = incorrect_pairwise
-                    FN = incorrect_pairwise
-
-                    labels = [0] * len(non_synthetic_scores) + [1] * len(synthetic_scores)
-                    scores = non_synthetic_scores + synthetic_scores
-
-                    auroc = roc_auc_score(labels, scores) if len(set(labels)) == 2 else 0.0
-                    accuracy = (TP + TN) / (TP + TN + FP + FN)
-                    precision = TP / (TP + FP) if (TP + FP) > 0 else 0
-                    recall = TP / (TP + FN) if (TP + FN) > 0 else 0
-                    f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) else 0
-
-                    # Store per-variant metrics
                     variant_results.append({
-                        'Model': model_type,
-                        'm': m,
-                        'Variant': variant_name,
-                        'AUROC': auroc,
-                        'Accuracy': accuracy,
-                        'Precision': precision,
-                        'Recall': recall,
-                        'F1_Score': f1
+                        "Model": model_path,
+                        "m": m,
+                        "Variant": variant_name,
+                        "AUROC": metrics["AUROC"],
+                        "Accuracy": metrics["Accuracy"],
+                        "Pairwise_Accuracy": metrics["Pairwise_Accuracy"],
+                        "Precision": metrics["Precision"],
+                        "Recall": metrics["Recall"],
+                        "F1_Score": metrics["F1_Score"],
+                        "Pairs": metrics["pairwise_count"],
+                        "CorrectPairs": metrics["correct_pairwise"]
                     })
 
+                    print(f"✓ {variant_name}: {metrics['pairwise_count']} pairs, "
+                          f"{metrics['correct_pairwise']} correct "
+                          f"(Acc: {metrics['Accuracy']:.4f}, AUROC: {metrics['AUROC']:.4f})")
 
-            #total all variant    
-            #evaluation metrics
-            #incorrect pairwise
-            incorrect_pairwise = total_pairwise - correct_pairwise
+                else:
+                    print(f"✗ {variant_name}: No valid pairs generated")
+                    # still store an entry indicating skipped/empty
+                    variant_results.append({
+                        "Model": model_path,
+                        "m": m,
+                        "Variant": variant_name,
+                        "AUROC": 0.0,
+                        "Accuracy": 0.0,
+                        "Pairwise_Accuracy": 0.0,
+                        "Precision": 0.0,
+                        "Recall": 0.0,
+                        "F1_Score": 0.0,
+                        "Pairs": 0,
+                        "CorrectPairs": 0
+                    })
 
-            #basics
-            TP = correct_pairwise
-            TN = correct_pairwise
-            FP = incorrect_pairwise
-            FN = incorrect_pairwise
+            if total_non_synth_scores and total_synth_scores:
+                totals_metrics = compute_classification_metrics(
+                total_non_synth_scores, total_synth_scores
+            )
 
-            #auroc
-            labels = [0] * len(non_synthetic_scores) + [1] * len(synthetic_scores)
-            scores = total_non_synthetic_scores  + total_synthetic_scores
-            auroc = 0.0
-            if len(set(labels)) >> 1: #making sure three's 2 classes
-                auroc = roc_auc_score(labels, scores)
+                final_result.append({
+                    "Model": model_name,
+                    "m": m,
+                    "AUROC": f"{totals_metrics['AUROC']:.4f}",
+                    "Accuracy": f"{totals_metrics['Accuracy']:.4f}",
+                    "Pairwise_Accuracy": f"{totals_metrics['Pairwise_Accuracy']:.4f}",
+                    "Precision": f"{totals_metrics['Precision']:.4f}",
+                    "Recall": f"{totals_metrics['Recall']:.4f}",
+                    "F1_Score": f"{totals_metrics['F1_Score']:.4f}",
+                    "TotalPairs": totals_metrics["pairwise_count"],
+                    "TotalCorrectPairs": totals_metrics["correct_pairwise"]
+                })
 
-            #accuracy
-            accuracy = 0.0
-            if (TP + TN + FP + FN) > 0:
-                accuracy = (TP + TN) / (TP + TN + FP + FN)
+                print(f"\n{'='*60}")
+                print(f"OVERALL RESULTS: {model_name.upper()} | m = {m}")
+                print(f"{'='*60}")
+                print(f"  AUROC:     {totals_metrics['AUROC']:.4f}")
+                print(f"  Accuracy:  {totals_metrics['Accuracy']:.4f}")
+                print(f"  Pairwise Accuracy:  {totals_metrics['Pairwise_Accuracy']:.4f}")
+                print(f"  Precision: {totals_metrics['Precision']:.4f}")
+                print(f"  Recall:    {totals_metrics['Recall']:.4f}")
+                print(f"  F1-Score:  {totals_metrics['F1_Score']:.4f}")
+                print(f"  Pairs:     {totals_metrics['pairwise_count']}")
+                print(f"  Correct:   {totals_metrics['correct_pairwise']}")
+            else:
+                print(f"\n✗ No valid data for {model_name} with m = {m}")
 
-            #precision
-            precision = 0.0
-            if (TP + FP) > 0:
-                precision = TP / (TP + FP)
+    # === Save Results ===
+    print("\n\n" + "="*60)
+    print("SAVING RESULTS")
+    print("="*60)
 
-            #recall
-            recall = 0.0
-            if (TP + FN) > 0:
-                recall = TP / (TP + FN)
-                
-            #F1-Score
-            f1 = 0.0
-            if (precision + recall) > 0:
-                f1 = 2 * (precision * recall) / (precision + recall)
-            
-            
-            
-            # Store results
-            final_result.append({
-                'Model': model_type,
-                'm': m,
-                'AUROC': auroc,
-                'Accuracy': accuracy,
-                'Precision': precision,
-                'Recall': recall,
-                'F1_Score': f1
-            })
-
-            print(f"--- Results for Model={model_type}, m={m} ---")
-            print(f"  AUROC (Eq 3.9): {auroc:.4f}")
-            print(f"  Accuracy (Eq 3.5): {accuracy:.4f}")
-            print(f"  Precision (Eq 3.6): {precision:.4f}")
-            print(f"  Recall (Eq 3.7): {recall:.4f}")
-            print(f"  F1_Score (Eq 3.8): {f1:.4f}")
-
-
-    # === FINAL SUMMARY REPORTS ===
-    print("\n\n--- PER-VARIANT RESULTS ---")
     df_variant = pd.DataFrame(variant_results)
-    print(df_variant.to_string())
-    df_variant.to_csv("./evaluation_variant_results.csv", index=False)
-
-    print("\n\n--- TOTAL RESULTS ---")
     df_total = pd.DataFrame(final_result)
-    print(df_total.to_string())
-    df_total.to_csv("./evaluation_results.csv", index=False)
 
-    print("\nResults saved to 'evaluation_variant_results.csv' and 'evaluation_results.csv'")
+    if not df_variant.empty:
+        df_variant.to_csv("./evaluation_variant_results.csv", index=False)
+        print("✓ Per-variant results saved to 'evaluation_variant_results.csv'")
+    
+    if not df_total.empty:
+        df_total.to_csv("./evaluation_results.csv", index=False)
+        print("✓ Overall results saved to 'evaluation_results.csv'")
+        print("\n--- FINAL SUMMARY ---")
+        print(df_total.to_string(index=False))
+    else:
+        print("✗ No results to save - check your data and rewriter output")
 
 
 if __name__ == "__main__":

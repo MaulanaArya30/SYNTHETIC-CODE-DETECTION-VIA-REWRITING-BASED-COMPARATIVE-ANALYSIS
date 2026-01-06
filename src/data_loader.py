@@ -35,12 +35,22 @@ def load_paired_dataset(file_path):
 #simcse training data list
 def load_simcse_training_data():
     #one time library import
-    from datasets import load_dataset
-    print("Loading 'code_search_net' dataset for SimCSE training...")
+    # from datasets import load_dataset
+    # print("Loading 'code_search_net' dataset for SimCSE training...")
 
-    dataset = load_dataset(settings.CODE_SEARCH_NET, split='train')
+    # dataset = load_dataset(settings.CODE_SEARCH_NET, split='train')
 
-    print("Available columns:", dataset.column_names)
-    code_samples = [sample['code'] for sample in dataset]
-    print(f'Loaded {len(code_samples)} samples for SimCSE training')
+    #print("Available columns:", dataset.column_names)
+    # print("Available columns:", dataset.columns)
+    # code_samples = [sample['code'] for sample in dataset]
+    # print(f'Loaded {len(code_samples)} samples for SimCSE training')
+    
+    import pandas as pd
+    dataset = pd.read_csv('../data/embedding_train.csv')
+    print("Loading local embeddingtraining data from CSV files...")
+    print("Available columns:", dataset.columns.tolist())
+
+    code_samples = dataset['code'].tolist()
+    print(f"Loaded {len(code_samples)} samples for SimCSE training")
+
     return code_samples
