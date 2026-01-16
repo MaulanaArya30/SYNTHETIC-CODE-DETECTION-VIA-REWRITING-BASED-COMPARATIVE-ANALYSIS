@@ -46,7 +46,7 @@ def load_simcse_training_data():
     # print(f'Loaded {len(code_samples)} samples for SimCSE training')
     
     import pandas as pd
-    dataset = pd.read_csv('../data/embedding_train.csv')
+    dataset = pd.read_csv('data/embedding_train.csv')
     print("Loading local embeddingtraining data from CSV files...")
     print("Available columns:", dataset.columns.tolist())
 

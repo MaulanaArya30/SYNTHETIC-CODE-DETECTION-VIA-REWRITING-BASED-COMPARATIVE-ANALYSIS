@@ -6,22 +6,70 @@ from torch.optim import AdamW
 from tqdm import tqdm
 import argparse
 import os
+import random
+import re
 
 import settings
 from data_loader import load_simcse_training_data
 
 
 class CodeDataset(Dataset):
-    def __init__(self, code_samples, tokenizer, max_length=512):
+    def __init__(self, code_samples, tokenizer, max_length=512, augment=True):
         self.code_samples = code_samples
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.augment = augment
 
     def __len__(self):
         return len(self.code_samples)
     
+    def augment_code(self, code):
+        """
+        Apply simple code augmentation to create harder positive pairs.
+        These augmentations preserve semantics while changing surface form.
+        """
+        if not self.augment or random.random() > 0.3:  # 30% augmentation rate
+            return code
+        
+        augmented = code
+        
+        # 1. Whitespace variations (most common)
+        if random.random() < 0.5:
+            # Toggle between spaces and tabs
+            if '    ' in augmented:
+                augmented = augmented.replace('    ', '\t')
+            elif '\t' in augmented:
+                augmented = augmented.replace('\t', '    ')
+        
+        # 2. Line reordering (for independent statements)
+        if random.random() < 0.2:
+            lines = augmented.split('\n')
+            # Only reorder import statements (safe to reorder)
+            import_lines = [l for l in lines if l.strip().startswith('import ') or l.strip().startswith('from ')]
+            other_lines = [l for l in lines if l not in import_lines]
+            
+            if len(import_lines) > 1:
+                random.shuffle(import_lines)
+                augmented = '\n'.join(import_lines + other_lines)
+        
+        # 3. Add/remove trailing whitespace
+        if random.random() < 0.3:
+            lines = augmented.split('\n')
+            augmented = '\n'.join([l.rstrip() + (' ' if random.random() < 0.5 else '') for l in lines])
+        
+        # 4. Quote style variation (single vs double)
+        if random.random() < 0.2:
+            # Only change string literals, not docstrings
+            augmented = re.sub(r"'([^']*)'", r'"\1"', augmented)
+        
+        return augmented
+    
     def __getitem__(self, idx):
-        code = self.code_samples[idx]   
+        code = self.code_samples[idx]
+        
+        # Apply augmentation
+        code = self.augment_code(code)
+        
         inputs = self.tokenizer(
             code,
             return_tensors="pt",
@@ -33,73 +81,62 @@ class CodeDataset(Dataset):
         return inputs
 
 
-def simcse_loss(z1, z2, temperature=0.07, debug=False):
+def simcse_loss(z1, z2, temperature=0.07):
     batch_size = z1.shape[0]
     
-    if debug:
-        print(f"\n[PRE-NORM] z1 norm: {z1.norm(dim=1).mean():.4f}, z2 norm: {z2.norm(dim=1).mean():.4f}")
-    
-    # Normalize to unit sphere
     z1 = F.normalize(z1, p=2, dim=1)
     z2 = F.normalize(z2, p=2, dim=1)
     
-    if debug:
-        print(f"[POST-NORM] z1 norm: {z1.norm(dim=1).mean():.4f}, z2 norm: {z2.norm(dim=1).mean():.4f}")
+    sim_11 = torch.matmul(z1, z1.T) / temperature
+    sim_22 = torch.matmul(z2, z2.T) / temperature
+    sim_12 = torch.matmul(z1, z2.T) / temperature
     
-    # Compute similarities (will be between -1 and 1 after normalization)
-    sim_11 = torch.matmul(z1, z1.T)
-    sim_22 = torch.matmul(z2, z2.T)
-    sim_12 = torch.matmul(z1, z2.T)
-    
-    if debug:
-        print(f"[PRE-TEMP] sim_12 range: [{sim_12.min():.3f}, {sim_12.max():.3f}]")
-        print(f"[PRE-TEMP] sim_12 diag mean: {sim_12.diag().mean():.3f}")
-    
-    # Apply temperature scaling
-    sim_11 = sim_11 / temperature
-    sim_22 = sim_22 / temperature
-    sim_12 = sim_12 / temperature
-    
-    if debug:
-        print(f"[POST-TEMP] sim_12 range: [{sim_12.min():.3f}, {sim_12.max():.3f}]")
-    
-    # Mask self-similarities
     mask = torch.eye(batch_size, dtype=torch.bool, device=z1.device)
     sim_11 = sim_11.masked_fill(mask, -9e15)
     sim_22 = sim_22.masked_fill(mask, -9e15)
     
-    # Concatenate and compute loss
     logits = torch.cat([sim_12, sim_11], dim=1)
     labels = torch.arange(batch_size, device=z1.device)
     loss = F.cross_entropy(logits, labels)
-    
-    if debug:
-        print(f"[LOSS] {loss.item():.4f}\n")
     
     return loss
 
 
 def get_embeddings(encoder_model, model_type, outputs):
-    """
-    Extract embeddings with proper pooling.
-    FIXED: Correct parameter name (was 'ecoder_model')
-    """
     if model_type == 'codet5':
-        # Mean pooling for CodeT5
-        emb = outputs.last_hidden_state.mean(dim=1)
+        return outputs.last_hidden_state.mean(dim=1)
     else:
-        # CLS token for GraphCodeBERT
-        emb = outputs.last_hidden_state[:, 0]
+        return outputs.last_hidden_state[:, 0]
+
+
+@torch.no_grad()
+def evaluate_on_validation(encoder_model, model_type, val_loader):
+    encoder_model.eval()
+    total_loss = 0.0
+    steps = 0
     
-    return emb
+    for batch in val_loader:
+        input_ids = batch['input_ids'].to(settings.DEVICE)
+        attention_mask = batch['attention_mask'].to(settings.DEVICE)
+        
+        outputs_1 = encoder_model(input_ids=input_ids, attention_mask=attention_mask)
+        outputs_2 = encoder_model(input_ids=input_ids, attention_mask=attention_mask)
+        
+        emb_1 = get_embeddings(encoder_model, model_type, outputs_1)
+        emb_2 = get_embeddings(encoder_model, model_type, outputs_2)
+        
+        loss = simcse_loss(emb_1, emb_2)
+        total_loss += loss.item()
+        steps += 1
+    
+    return total_loss / steps if steps > 0 else float('inf')
 
 
 def train(model_type):
     print(f'\n{"="*60}')
-    print(f'SimCSE Training: {model_type.upper()}')
+    print(f'SimCSE Training with Augmentation: {model_type.upper()}')
     print(f'{"="*60}')
 
-    # Load model
     if model_type == 'codet5':
         tokenizer = RobertaTokenizer.from_pretrained(settings.CODET5_MODEL_NAME)
         model = T5ForConditionalGeneration.from_pretrained(settings.CODET5_MODEL_NAME)
@@ -118,149 +155,130 @@ def train(model_type):
     os.makedirs(save_path, exist_ok=True)
     encoder_model = encoder_model.to(settings.DEVICE)
 
-    # Load data
     print("Loading training data...")
     code_samples = load_simcse_training_data()
-    train_dataset = CodeDataset(code_samples, tokenizer)
+    
+    # Train/val split
+    split_idx = int(len(code_samples) * 0.95)
+    train_samples = code_samples[:split_idx]
+    val_samples = code_samples[split_idx:]
+    
+    print(f"  Train: {len(train_samples)} | Val: {len(val_samples)}")
+    
+    # IMPORTANT: Augmentation only for training, not validation
+    train_dataset = CodeDataset(train_samples, tokenizer, augment=True)
+    val_dataset = CodeDataset(val_samples, tokenizer, augment=False)
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=settings.SIMCSE_BATCH_SIZE,
         shuffle=True,
         num_workers=0
     )
-
-    optimizer = AdamW(encoder_model.parameters(), lr=settings.SIMCSE_LR)
     
-    # Add learning rate scheduler to prevent overconfidence
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=settings.SIMCSE_BATCH_SIZE,
+        shuffle=False,
+        num_workers=0
+    )
+
+    optimizer = AdamW(
+        encoder_model.parameters(), 
+        lr=settings.SIMCSE_LR,
+        weight_decay=0.01
+    )
+    
     from torch.optim.lr_scheduler import CosineAnnealingLR
     total_steps = len(train_loader) * settings.SIMCSE_EPOCHS
     scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=1e-6)
     
-    epoch_losses = []
-    best_loss = float('inf')
+    best_val_loss = float('inf')
+    patience = 3
+    patience_counter = 0
+    train_losses = []
+    val_losses = []
 
     print(f"Configuration:")
     print(f"  Epochs: {settings.SIMCSE_EPOCHS}")
     print(f"  Batch size: {settings.SIMCSE_BATCH_SIZE}")
     print(f"  Learning rate: {settings.SIMCSE_LR}")
-    print(f"  Samples: {len(code_samples)}")
-    print(f"  Device: {settings.DEVICE}")
+    print(f"  Weight decay: 0.01")
+    print(f"  Data augmentation: ON (30% probability)")
+    print(f"  Early stopping: {patience} epochs patience\n")
 
     for epoch in range(settings.SIMCSE_EPOCHS):
         print(f'{"─"*60}')
         print(f'Epoch {epoch+1}/{settings.SIMCSE_EPOCHS}')
         print(f'{"─"*60}')
         
-        encoder_model.train()  # Enable dropout
+        encoder_model.train()
         running_loss = 0.0
         steps = 0
 
-        pbar = tqdm(train_loader, desc="Training", unit="it")
+        pbar = tqdm(train_loader, desc="Training")
         for batch_idx, batch in enumerate(pbar):
             optimizer.zero_grad()
 
             input_ids = batch['input_ids'].to(settings.DEVICE)
             attention_mask = batch['attention_mask'].to(settings.DEVICE)
 
-            # Two forward passes with different dropout
             outputs_1 = encoder_model(input_ids=input_ids, attention_mask=attention_mask)
             outputs_2 = encoder_model(input_ids=input_ids, attention_mask=attention_mask)
 
-            # Extract embeddings
             emb_1 = get_embeddings(encoder_model, model_type, outputs_1)
             emb_2 = get_embeddings(encoder_model, model_type, outputs_2)
 
-            # First batch diagnostics
-            if batch_idx == 0:
-                debug_mode = True
-                with torch.no_grad():
-                    diff = (emb_1 - emb_2).abs().mean().item()
-                    sim = F.cosine_similarity(emb_1, emb_2, dim=1).mean().item()
-                    print(f"[First Batch Check]")
-                    print(f"  Embedding difference: {diff:.6f} (should be > 0.001)")
-                    print(f"  Cosine similarity: {sim:.4f} (should be < 0.99)")
-                    if diff < 0.0001:
-                        print(f"  ⚠️  Dropout may not be active!")
-                    else:
-                        print(f"  ✓ Dropout active")
-            else:
-                debug_mode = False
-
-            # Compute loss (using temperature 0.07 to prevent overconfidence)
-            loss = simcse_loss(emb_1, emb_2, temperature=0.07, debug=debug_mode)
+            loss = simcse_loss(emb_1, emb_2)
             
-            # Sanity checks
             if not torch.isfinite(loss):
-                print(f"\n⚠️  Non-finite loss! Skipping batch...")
                 continue
             
-            if batch_idx == 0:
-                print(f"  First loss: {loss.item():.4f}")
-                if loss.item() < 0.1:
-                    print(f"  ⚠️  Loss too low! Check implementation!")
-                    print(f"  Expected: 2-4, Got: {loss.item():.4f}")
-                elif loss.item() > 10:
-                    print(f"  ⚠️  Loss too high!")
-                else:
-                    print(f"  ✓ Loss looks good")
-            
-            # Backward
             loss.backward()
             torch.nn.utils.clip_grad_norm_(encoder_model.parameters(), max_norm=1.0)
             optimizer.step()
-            scheduler.step()  # Update learning rate
+            scheduler.step()
 
             running_loss += loss.item()
             steps += 1
-            
-            # Show current learning rate occasionally
-            if batch_idx % 1000 == 0:
-                current_lr = scheduler.get_last_lr()[0]
-                pbar.set_postfix({'loss': f"{loss.item():.4f}", 'lr': f"{current_lr:.6f}"})
-            else:
-                pbar.set_postfix({'loss': f"{loss.item():.4f}"})
+            pbar.set_postfix({'loss': f"{loss.item():.4f}"})
 
-        avg_loss = running_loss / steps
-        epoch_losses.append(avg_loss)
+        avg_train_loss = running_loss / steps
+        train_losses.append(avg_train_loss)
         
-        print(f"  Average Loss: {avg_loss:.4f}")
+        val_loss = evaluate_on_validation(encoder_model, model_type, val_loader)
+        val_losses.append(val_loss)
         
-        if avg_loss < 0.1:
-            print(f"  ⚠️  CRITICAL: Loss too low! Implementation bug likely!")
-        elif avg_loss > 5.0:
-            print(f"  ⚠️  Loss high, may need more epochs")
-        else:
-            print(f"  ✓ Loss in expected range")
-
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            print(f"  ★ Best loss! Saving...")
+        print(f"  Train: {avg_train_loss:.4f} | Val: {val_loss:.4f}")
+        
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+            print(f"  ★ Best! Saving...")
             model.save_pretrained(save_path)
             tokenizer.save_pretrained(save_path)
+        else:
+            patience_counter += 1
+            print(f"  No improvement ({patience_counter}/{patience})")
+            
+            if patience_counter >= patience:
+                print(f"\n  Early stopping!")
+                break
 
-    # Save log
     loss_file = os.path.join(save_path, "loss_log.txt")
     with open(loss_file, "w") as f:
         f.write(f"Training: {model_type}\n")
-        f.write(f"Best: {best_loss:.6f}\n")
-        f.write(f"Final: {avg_loss:.6f}\n\n")
-        for i, l in enumerate(epoch_losses):
-            f.write(f"Epoch {i+1}: {l:.6f}\n")
+        f.write(f"Best Val: {best_val_loss:.6f}\n")
+        f.write(f"Stopped: Epoch {epoch+1}\n")
+        f.write(f"Augmentation: ON\n\n")
+        for i, (t, v) in enumerate(zip(train_losses, val_losses)):
+            f.write(f"Epoch {i+1}: Train={t:.6f}, Val={v:.6f}\n")
 
     print(f'\n{"="*60}')
     print(f'Completed: {model_type.upper()}')
-    print(f'{"="*60}')
-    print(f'  Final: {avg_loss:.4f}')
-    print(f'  Best: {best_loss:.4f}')
-    print(f'  Saved: {save_path}')
-    
-    if best_loss > 2.0:
-        print(f'\n  ⚠️  High loss - consider more epochs')
-    elif best_loss < 0.1:
-        print(f'\n  ⚠️  Very low loss - check for bugs!')
-    else:
-        print(f'\n  ✓ Training successful!?')
-    print()
+    print(f'  Best Val: {best_val_loss:.4f}')
+    print(f'  Epochs: {epoch+1}/{settings.SIMCSE_EPOCHS}')
+    print(f'{"="*60}\n')
 
 
 if __name__ == "__main__":
