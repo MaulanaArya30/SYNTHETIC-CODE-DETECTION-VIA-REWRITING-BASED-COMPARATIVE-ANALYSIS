@@ -11,22 +11,22 @@ CODET5_SIMCSE_PATH = './models/codet5-simcse'
 GCB_MODEL_NAME = 'microsoft/graphcodebert-base'
 GCB_SIMCSE_PATH = './models/graphcodebert-simcse'
 #dataset
-# VARIANT_FILES = [
-#     'data/variant_1_full_processed.csv',
-#     'data/variant_4_full_processed.csv',
-#     'data/variant_5_full_processed.csv',
-#     'data/variant_6_full_processed.csv',
-#     'data/variant_7_full_processed.csv',
-#     'data/variant_8_full_processed.csv',
-#     'data/variant_9_full_processed.csv',
-#     'data/variant_10_full_processed.csv',
-#     'data/variant_11_full_processed.csv',
-#     'data/variant_12_full_processed.csv',
-#     'data/variant_13_full_processed.csv',
-# ]
 VARIANT_FILES = [
-    'data/test_df.csv',
+    'data/variant_1_full_processed.csv',
+    'data/variant_4_full_processed.csv',
+    'data/variant_5_full_processed.csv',
+    'data/variant_6_full_processed.csv',
+    'data/variant_7_full_processed.csv',
+    'data/variant_8_full_processed.csv',
+    'data/variant_9_full_processed.csv',
+    'data/variant_10_full_processed.csv',
+    'data/variant_11_full_processed.csv',
+    'data/variant_12_full_processed.csv',
+    'data/variant_13_full_processed.csv',
 ]
+# VARIANT_FILES = [
+#     'data/train_data/data_test_df.csv',
+# ]
 CODE_SEARCH_NET = 'Nan-Do/code-search-net-python'
 
 #naming
@@ -35,8 +35,9 @@ AI_COLUMN_NAME = 'GPT Answer'
 
 #training config
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-SIMCSE_EPOCHS = 15#5
+SIMCSE_EPOCHS = 20#5
 SIMCSE_BATCH_SIZE = 16#16
+GRADIENT_ACCUMULATION_STEPS = 8 #because GPU is limited
 SIMCSE_LR = 3e-5#1e-4
 
 #rewrite num

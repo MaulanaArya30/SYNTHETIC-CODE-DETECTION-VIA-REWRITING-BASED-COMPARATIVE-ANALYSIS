@@ -6,69 +6,22 @@ from torch.optim import AdamW
 from tqdm import tqdm
 import argparse
 import os
-import random
-import re
 
 import settings
 from data_loader import load_simcse_training_data
 
 
 class CodeDataset(Dataset):
-    def __init__(self, code_samples, tokenizer, max_length=512, augment=True):
+    def __init__(self, code_samples, tokenizer, max_length=512):
         self.code_samples = code_samples
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.augment = augment
 
     def __len__(self):
         return len(self.code_samples)
     
-    def augment_code(self, code):
-        """
-        Apply simple code augmentation to create harder positive pairs.
-        These augmentations preserve semantics while changing surface form.
-        """
-        if not self.augment or random.random() > 0.3:  # 30% augmentation rate
-            return code
-        
-        augmented = code
-        
-        # 1. Whitespace variations (most common)
-        if random.random() < 0.5:
-            # Toggle between spaces and tabs
-            if '    ' in augmented:
-                augmented = augmented.replace('    ', '\t')
-            elif '\t' in augmented:
-                augmented = augmented.replace('\t', '    ')
-        
-        # 2. Line reordering (for independent statements)
-        if random.random() < 0.2:
-            lines = augmented.split('\n')
-            # Only reorder import statements (safe to reorder)
-            import_lines = [l for l in lines if l.strip().startswith('import ') or l.strip().startswith('from ')]
-            other_lines = [l for l in lines if l not in import_lines]
-            
-            if len(import_lines) > 1:
-                random.shuffle(import_lines)
-                augmented = '\n'.join(import_lines + other_lines)
-        
-        # 3. Add/remove trailing whitespace
-        if random.random() < 0.3:
-            lines = augmented.split('\n')
-            augmented = '\n'.join([l.rstrip() + (' ' if random.random() < 0.5 else '') for l in lines])
-        
-        # 4. Quote style variation (single vs double)
-        if random.random() < 0.2:
-            # Only change string literals, not docstrings
-            augmented = re.sub(r"'([^']*)'", r'"\1"', augmented)
-        
-        return augmented
-    
     def __getitem__(self, idx):
         code = self.code_samples[idx]
-        
-        # Apply augmentation
-        code = self.augment_code(code)
         
         inputs = self.tokenizer(
             code,
@@ -82,19 +35,27 @@ class CodeDataset(Dataset):
 
 
 def simcse_loss(z1, z2, temperature=0.07):
+    """
+    SimCSE contrastive loss (NT-Xent).
+    Same as Ye et al. (2025).
+    """
     batch_size = z1.shape[0]
     
+    # Normalize to unit sphere
     z1 = F.normalize(z1, p=2, dim=1)
     z2 = F.normalize(z2, p=2, dim=1)
     
+    # Compute similarity matrices
     sim_11 = torch.matmul(z1, z1.T) / temperature
     sim_22 = torch.matmul(z2, z2.T) / temperature
     sim_12 = torch.matmul(z1, z2.T) / temperature
     
+    # Mask self-similarities
     mask = torch.eye(batch_size, dtype=torch.bool, device=z1.device)
     sim_11 = sim_11.masked_fill(mask, -9e15)
     sim_22 = sim_22.masked_fill(mask, -9e15)
     
+    # Concatenate and compute loss
     logits = torch.cat([sim_12, sim_11], dim=1)
     labels = torch.arange(batch_size, device=z1.device)
     loss = F.cross_entropy(logits, labels)
@@ -103,14 +64,18 @@ def simcse_loss(z1, z2, temperature=0.07):
 
 
 def get_embeddings(encoder_model, model_type, outputs):
+    """Extract embeddings with appropriate pooling."""
     if model_type == 'codet5':
+        # Mean pooling for CodeT5
         return outputs.last_hidden_state.mean(dim=1)
     else:
+        # CLS token for GraphCodeBERT
         return outputs.last_hidden_state[:, 0]
 
 
 @torch.no_grad()
 def evaluate_on_validation(encoder_model, model_type, val_loader):
+    """Evaluate model on validation set."""
     encoder_model.eval()
     total_loss = 0.0
     steps = 0
@@ -134,9 +99,10 @@ def evaluate_on_validation(encoder_model, model_type, val_loader):
 
 def train(model_type):
     print(f'\n{"="*60}')
-    print(f'SimCSE Training with Augmentation: {model_type.upper()}')
+    print(f'SimCSE Training (Ye et al. 2025): {model_type.upper()}')
     print(f'{"="*60}')
 
+    # Load model
     if model_type == 'codet5':
         tokenizer = RobertaTokenizer.from_pretrained(settings.CODET5_MODEL_NAME)
         model = T5ForConditionalGeneration.from_pretrained(settings.CODET5_MODEL_NAME)
@@ -155,19 +121,21 @@ def train(model_type):
     os.makedirs(save_path, exist_ok=True)
     encoder_model = encoder_model.to(settings.DEVICE)
 
+    # Load data
     print("Loading training data...")
     code_samples = load_simcse_training_data()
     
-    # Train/val split
+    # Train/val split (95/5)
     split_idx = int(len(code_samples) * 0.95)
     train_samples = code_samples[:split_idx]
     val_samples = code_samples[split_idx:]
     
-    print(f"  Train: {len(train_samples)} | Val: {len(val_samples)}")
+    print(f"  Train: {len(train_samples):,} samples")
+    print(f"  Val:   {len(val_samples):,} samples")
     
-    # IMPORTANT: Augmentation only for training, not validation
-    train_dataset = CodeDataset(train_samples, tokenizer, augment=True)
-    val_dataset = CodeDataset(val_samples, tokenizer, augment=False)
+    # Create datasets
+    train_dataset = CodeDataset(train_samples, tokenizer)
+    val_dataset = CodeDataset(val_samples, tokenizer)
     
     train_loader = DataLoader(
         train_dataset,
@@ -183,29 +151,38 @@ def train(model_type):
         num_workers=0
     )
 
+    # Optimizer (no weight decay - matching Ye et al.)
     optimizer = AdamW(
         encoder_model.parameters(), 
-        lr=settings.SIMCSE_LR,
-        weight_decay=0.01
+        lr=settings.SIMCSE_LR
     )
     
+    # Learning rate scheduler
     from torch.optim.lr_scheduler import CosineAnnealingLR
     total_steps = len(train_loader) * settings.SIMCSE_EPOCHS
     scheduler = CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=1e-6)
     
+    # Gradient accumulation settings
+    gradient_accumulation_steps = getattr(settings, 'GRADIENT_ACCUMULATION_STEPS', 1)
+    effective_batch_size = settings.SIMCSE_BATCH_SIZE * gradient_accumulation_steps
+    
+    # Early stopping
     best_val_loss = float('inf')
-    patience = 3
+    patience = getattr(settings, 'EARLY_STOPPING_PATIENCE', 8)
     patience_counter = 0
+    
     train_losses = []
     val_losses = []
 
-    print(f"Configuration:")
+    print(f"\nConfiguration:")
     print(f"  Epochs: {settings.SIMCSE_EPOCHS}")
-    print(f"  Batch size: {settings.SIMCSE_BATCH_SIZE}")
+    print(f"  Physical batch size: {settings.SIMCSE_BATCH_SIZE}")
+    print(f"  Gradient accumulation steps: {gradient_accumulation_steps}")
+    print(f"  Effective batch size: {effective_batch_size}")
     print(f"  Learning rate: {settings.SIMCSE_LR}")
-    print(f"  Weight decay: 0.01")
-    print(f"  Data augmentation: ON (30% probability)")
-    print(f"  Early stopping: {patience} epochs patience\n")
+    print(f"  Temperature: 0.07")
+    print(f"  Early stopping patience: {patience}")
+    print(f"  Device: {settings.DEVICE}\n")
 
     for epoch in range(settings.SIMCSE_EPOCHS):
         print(f'{"─"*60}')
@@ -214,47 +191,85 @@ def train(model_type):
         
         encoder_model.train()
         running_loss = 0.0
+        accumulated_loss = 0.0
         steps = 0
+        
+        # Zero gradients at start of epoch
+        optimizer.zero_grad()
 
         pbar = tqdm(train_loader, desc="Training")
         for batch_idx, batch in enumerate(pbar):
-            optimizer.zero_grad()
-
             input_ids = batch['input_ids'].to(settings.DEVICE)
             attention_mask = batch['attention_mask'].to(settings.DEVICE)
 
+            # Two forward passes with different dropout masks
             outputs_1 = encoder_model(input_ids=input_ids, attention_mask=attention_mask)
             outputs_2 = encoder_model(input_ids=input_ids, attention_mask=attention_mask)
 
+            # Extract embeddings
             emb_1 = get_embeddings(encoder_model, model_type, outputs_1)
             emb_2 = get_embeddings(encoder_model, model_type, outputs_2)
 
-            loss = simcse_loss(emb_1, emb_2)
+            # Compute loss
+            loss = simcse_loss(emb_1, emb_2, temperature=0.07)
             
             if not torch.isfinite(loss):
+                print(f"\n⚠️  Non-finite loss! Skipping batch...")
                 continue
             
+            # Scale loss by accumulation steps
+            loss = loss / gradient_accumulation_steps
             loss.backward()
+            
+            # Accumulate loss for monitoring
+            accumulated_loss += loss.item()
+            
+            # Update weights every accumulation_steps
+            if (batch_idx + 1) % gradient_accumulation_steps == 0:
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(encoder_model.parameters(), max_norm=1.0)
+                
+                # Optimizer step
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+                
+                # Track loss (multiply back by accumulation_steps for true loss)
+                running_loss += accumulated_loss * gradient_accumulation_steps
+                steps += 1
+                accumulated_loss = 0.0
+                
+                # Update progress bar
+                current_lr = scheduler.get_last_lr()[0]
+                pbar.set_postfix({
+                    'loss': f'{loss.item() * gradient_accumulation_steps:.4f}',
+                    'lr': f'{current_lr:.6f}'
+                })
+        
+        # Handle remaining gradients if batch doesn't divide evenly
+        if accumulated_loss > 0:
             torch.nn.utils.clip_grad_norm_(encoder_model.parameters(), max_norm=1.0)
             optimizer.step()
             scheduler.step()
-
-            running_loss += loss.item()
+            optimizer.zero_grad()
+            running_loss += accumulated_loss * gradient_accumulation_steps
             steps += 1
-            pbar.set_postfix({'loss': f"{loss.item():.4f}"})
 
-        avg_train_loss = running_loss / steps
+        avg_train_loss = running_loss / steps if steps > 0 else 0.0
         train_losses.append(avg_train_loss)
         
+        # Validation
         val_loss = evaluate_on_validation(encoder_model, model_type, val_loader)
         val_losses.append(val_loss)
         
-        print(f"  Train: {avg_train_loss:.4f} | Val: {val_loss:.4f}")
+        print(f"  Train Loss: {avg_train_loss:.4f}")
+        print(f"  Val Loss:   {val_loss:.4f}")
         
+        # Early stopping check
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
-            print(f"  ★ Best! Saving...")
+            print(f"  ★ Best validation loss! Saving checkpoint...")
             model.save_pretrained(save_path)
             tokenizer.save_pretrained(save_path)
         else:
@@ -262,29 +277,41 @@ def train(model_type):
             print(f"  No improvement ({patience_counter}/{patience})")
             
             if patience_counter >= patience:
-                print(f"\n  Early stopping!")
+                print(f"\n  ⚠️  Early stopping triggered!")
                 break
 
+    # Save training log
     loss_file = os.path.join(save_path, "loss_log.txt")
     with open(loss_file, "w") as f:
         f.write(f"Training: {model_type}\n")
-        f.write(f"Best Val: {best_val_loss:.6f}\n")
-        f.write(f"Stopped: Epoch {epoch+1}\n")
-        f.write(f"Augmentation: ON\n\n")
-        for i, (t, v) in enumerate(zip(train_losses, val_losses)):
-            f.write(f"Epoch {i+1}: Train={t:.6f}, Val={v:.6f}\n")
+        f.write(f"Best Val Loss: {best_val_loss:.6f}\n")
+        f.write(f"Final Train Loss: {avg_train_loss:.6f}\n")
+        f.write(f"Stopped at Epoch: {epoch+1}/{settings.SIMCSE_EPOCHS}\n")
+        f.write(f"Effective Batch Size: {effective_batch_size}\n\n")
+        for i, (t_loss, v_loss) in enumerate(zip(train_losses, val_losses)):
+            f.write(f"Epoch {i+1}: Train={t_loss:.6f}, Val={v_loss:.6f}\n")
 
     print(f'\n{"="*60}')
-    print(f'Completed: {model_type.upper()}')
-    print(f'  Best Val: {best_val_loss:.4f}')
-    print(f'  Epochs: {epoch+1}/{settings.SIMCSE_EPOCHS}')
-    print(f'{"="*60}\n')
+    print(f'Training Completed: {model_type.upper()}')
+    print(f'{"="*60}')
+    print(f'  Best Val Loss: {best_val_loss:.4f}')
+    print(f'  Final Train Loss: {avg_train_loss:.4f}')
+    print(f'  Epochs Trained: {epoch+1}/{settings.SIMCSE_EPOCHS}')
+    print(f'  Effective Batch Size: {effective_batch_size}')
+    print(f'  Saved to: {save_path}\n')
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, required=True, 
-                       choices=['codet5', 'graphcodebert', 'all'])
+    parser = argparse.ArgumentParser(
+        description="Train SimCSE for code embeddings (Ye et al. 2025 method)"
+    )
+    parser.add_argument(
+        '--model', 
+        type=str, 
+        required=True, 
+        choices=['codet5', 'graphcodebert', 'all'],
+        help="Model architecture to train"
+    )
     args = parser.parse_args()
     
     if args.model == "all":
