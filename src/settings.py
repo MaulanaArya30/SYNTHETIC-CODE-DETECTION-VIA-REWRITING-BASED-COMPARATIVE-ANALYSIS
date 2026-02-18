@@ -36,8 +36,8 @@ AI_COLUMN_NAME = 'GPT Answer'
 #training config
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 SIMCSE_EPOCHS = 20#5
-SIMCSE_BATCH_SIZE = 16#16
-GRADIENT_ACCUMULATION_STEPS = 8 #because GPU is limited
+SIMCSE_BATCH_SIZE = 8#16
+GRADIENT_ACCUMULATION_STEPS =  16#because GPU is limited
 SIMCSE_LR = 3e-5#1e-4
 
 #rewrite num

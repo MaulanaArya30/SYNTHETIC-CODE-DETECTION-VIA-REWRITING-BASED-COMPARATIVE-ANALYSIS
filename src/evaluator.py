@@ -95,13 +95,14 @@ def run_evaluation():
 
     # iterate models you want to test
     for model_name in ["graphcodebert", "codet5"]:
-        model_path = settings.GCB_SIMCSE_PATH if model_name == "graphcodebert" else settings.CODET5_SIMCSE_PATH
+        # model_path = settings.GCB_SIMCSE_PATH if model_name == "graphcodebert" else settings.CODET5_SIMCSE_PATH
+        model_path = settings.GCB_MODEL_NAME if model_name == "graphcodebert" else settings.CODET5_MODEL_NAME
 
-        if not os.path.exists(model_path):
-            print("---" * 10)
-            print(f"{model_path} not found... skipping {model_name}")
-            print("---" * 10)
-            continue
+        # if not os.path.exists(model_path):
+        #     print("---" * 10)
+        #     print(f"{model_path} not found... skipping {model_name}")
+        #     print("---" * 10)
+        #     continue
 
         # initialize detector (loads encoder)
         detector = CodeDetector(model_type=model_name)
@@ -264,12 +265,12 @@ def run_evaluation():
     df_total = pd.DataFrame(final_result)
 
     if not df_variant.empty:
-        df_variant.to_csv("./evaluation_variant_results.csv", index=False)
-        print("✓ Per-variant results saved to 'evaluation_variant_results.csv'")
+        df_variant.to_csv("./evaluation_variant_results_base.csv", index=False)
+        print("✓ Per-variant results saved to 'evaluation_variant_results_base.csv'")
     
     if not df_total.empty:
-        df_total.to_csv("./evaluation_results.csv", index=False)
-        print("✓ Overall results saved to 'evaluation_results.csv'")
+        df_total.to_csv("./evaluation_results_base.csv", index=False)
+        print("✓ Overall results saved to 'evaluation_results_base.csv'")
         print("\n--- FINAL SUMMARY ---")
         print(df_total.to_string(index=False))
     else:

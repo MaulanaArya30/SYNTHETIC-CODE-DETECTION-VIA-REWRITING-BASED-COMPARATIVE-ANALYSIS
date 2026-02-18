@@ -15,4 +15,5 @@ data/*
 models/*
 !models/.gitkeep
 
-evaluation_results/*
+evaluation_result/*
+evaluation_result/*
