@@ -38,7 +38,8 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 SIMCSE_EPOCHS = 20#5
 SIMCSE_BATCH_SIZE = 8#16
 GRADIENT_ACCUMULATION_STEPS =  16#because GPU is limited
-SIMCSE_LR = 3e-5#1e-4
+SIMCSE_LR = 1e-4#3e-5
+SIMCSE_TEMP = 0.1#0.07
 
 #rewrite num
 NUM_REWRITES = [2, 4, 8]
