@@ -1,7 +1,8 @@
 import torch
 
 #model rewriter
-REWRITER_MODEL_NAME = 'Salesforce/codet5-base'
+# REWRITER_MODEL_NAME = 'Salesforce/codet5-base' #not used anymore because of corrupt data
+REWRITER_MODEL_NAME = 'deepseek-ai/deepseek-coder-6.7b-instruct'
 
 #CodeT5
 CODET5_MODEL_NAME = 'Salesforce/codet5-base'
