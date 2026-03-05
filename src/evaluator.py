@@ -1,4 +1,7 @@
 import os
+os.makedirs("/dev/shm/.hf_cache", exist_ok=True)
+os.environ["HF_HOME"] = "/dev/shm/.hf_cache"
+
 from tqdm import tqdm
 import pandas as pd
 from sklearn.metrics import roc_auc_score

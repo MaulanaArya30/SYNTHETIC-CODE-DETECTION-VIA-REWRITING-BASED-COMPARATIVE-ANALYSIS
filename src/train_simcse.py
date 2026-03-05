@@ -1,3 +1,7 @@
+import os
+os.makedirs("/dev/shm/.hf_cache", exist_ok=True)
+os.environ["HF_HOME"] = "/dev/shm/.hf_cache"
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

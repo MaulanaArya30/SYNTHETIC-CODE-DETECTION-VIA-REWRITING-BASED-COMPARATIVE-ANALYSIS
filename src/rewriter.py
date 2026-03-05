@@ -33,7 +33,6 @@ class CodeRewriter:
     # This is the same logical prompt as before, just wrapped correctly.
     def _make_prompt(self, code):
         return (
-            f"### Instruction:\n"
             f"Please explain the functionality of the given code, "
             f"then rewrite it in a single markdown code block. "
             f"No additional clarifications.\n\n"
