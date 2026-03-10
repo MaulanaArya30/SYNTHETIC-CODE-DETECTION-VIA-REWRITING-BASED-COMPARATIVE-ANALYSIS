@@ -11,7 +11,6 @@ from transformers import get_linear_schedule_with_warmup
 from torch.optim import AdamW
 from tqdm import tqdm
 import argparse
-import os
 
 import settings
 from data_loader import load_simcse_training_data
