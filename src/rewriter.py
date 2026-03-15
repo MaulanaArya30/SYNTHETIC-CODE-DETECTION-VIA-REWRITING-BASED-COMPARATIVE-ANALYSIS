@@ -30,10 +30,10 @@ class CodeRewriter:
             {
                 "role": "user",
                 "content": (
-                    f"Please explain the functionality of the given code, "
-                    f"then rewrite it in a single markdown code block. "
-                    f"No additional clarifications.\n\n"
-                    f"```python\n{code}\n```"
+                    f"Rewrite the following Python code. "
+                    f"Return ONLY the rewritten code in a single markdown code block. "
+                    f"Do not explain, do not add comments.\n\n"
+                    f"{code}"
                 )
             }
         ]
@@ -63,18 +63,19 @@ class CodeRewriter:
         Returns False if the rewrite is empty, too short, identical to the
         original, or a repetition loop.
         """
-        if not rewrite or len(rewrite.strip()) < 20:
+        if not rewrite or len(rewrite.strip()) < 10:
+            print(f"  [FAIL] Too short or empty: len={len(rewrite.strip()) if rewrite else 0}")
             return False
-        # Reject if way too short compared to original
-        if len(rewrite) < len(original) * 0.15:
+        if len(rewrite) < len(original) * 0.10:
+            print(f"  [FAIL] Too short vs original: {len(rewrite)} < {len(original) * 0.10:.0f}")
             return False
-        # Reject identical copies - cosine sim would always be 1.0
         if rewrite.strip() == original.strip():
+            print(f"  [FAIL] Identical copy")
             return False
-        # Reject repetition loops
-        for i in range(len(rewrite) - 15):
-            fragment = rewrite[i:i + 15]
-            if rewrite.count(fragment) >= 4:
+        for i in range(len(rewrite) - 20):
+            fragment = rewrite[i:i + 20]
+            if rewrite.count(fragment) >= 6:
+                print(f"  [FAIL] Repetition loop detected")
                 return False
         return True
 
@@ -84,73 +85,92 @@ class CodeRewriter:
     def generate_rewrites_batch(self, code_list, num_rewrites):
         return self._generate(code_list, num_rewrites)
 
+
     def _generate(self, code_list, num_rewrites):
-        """
-        Generate num_rewrites rewritten versions per code sample.
-
-        All m rewrites use the same prompt - variation comes naturally from
-        do_sample=True with temperature=0.9, matching Ye et al. (2025).
-
-        Uses num_return_sequences to generate all m rewrites in a single
-        model.generate() call per sample.
-
-        Returns list[list[str] | None]:
-          - list[str] of length num_rewrites if ALL rewrites passed validation
-          - None if ANY rewrite failed - the evaluator's valid_indices filter
-            skips this sample entirely, avoiding artificial 1.0 cosine scores
-            from padding with the original code.
-        """
         self.tokenizer.padding_side = "left"
-        all_rewrites = []
+        CANDIDATES_PER_ATTEMPT = min(num_rewrites * 2, 8)
+        all_rewrites = [[] for _ in range(len(code_list))]
+        attempt_counts = [0] * len(code_list)  # track attempts per sample
+        max_attempts = num_rewrites * 2
+        needs_more = list(range(len(code_list)))  # indices still needing rewrites
 
-        for batch_idx, original in enumerate(code_list):
-            prompt = self._make_prompt(original)
-            sample_rewrites = []
-            failed = 0
+        while needs_more:
+            # Filter to only samples that haven't exceeded max_attempts
+            needs_more = [
+                i for i in needs_more
+                if len(all_rewrites[i]) < num_rewrites and attempt_counts[i] < max_attempts
+            ]
+            if not needs_more:
+                break
+
+            # Increment attempt count for all samples in this round
+            for i in needs_more:
+                attempt_counts[i] += 1
+
+            # Build batch from all samples that still need rewrites
+            batch_originals = [code_list[i] for i in needs_more]
+            batch_prompts = [self._make_prompt(c) for c in batch_originals]
 
             inputs = self.tokenizer(
-                prompt,
+                batch_prompts,
                 return_tensors="pt",
                 truncation=True,
                 max_length=1024,
-                padding=False,
-            ).to(settings.DEVICE)
+                padding=True,
+            ).to("cuda")
+
 
             with torch.no_grad():
                 outputs = self.model.generate(
                     input_ids=inputs.input_ids,
                     attention_mask=inputs.attention_mask,
-                    max_new_tokens=512,
-                    num_return_sequences=num_rewrites,
+                    max_new_tokens=256,
+                    num_return_sequences=CANDIDATES_PER_ATTEMPT,
                     do_sample=True,
                     top_p=0.95,
                     temperature=0.9,
-                    repetition_penalty=1.3,
+                    repetition_penalty=1.5,
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
                 )
 
-            # outputs shape: (num_rewrites, sequence_len)
-            # slice off prompt tokens to get only the generated part
+            # outputs shape: (len(needs_more) * CANDIDATES_PER_ATTEMPT, seq_len)
             prompt_len = inputs.input_ids.shape[1]
 
-            for seq in outputs:
-                decoded = self.tokenizer.decode(
-                    seq[prompt_len:], skip_special_tokens=True
-                )
-                cleaned = self._extract_code(decoded)
+            for batch_pos, sample_idx in enumerate(needs_more):
+                original = code_list[sample_idx]
+                seq_start = batch_pos * CANDIDATES_PER_ATTEMPT
+                seq_end = seq_start + CANDIDATES_PER_ATTEMPT
 
-                if cleaned and self._is_valid_rewrite(cleaned, original):
-                    sample_rewrites.append(cleaned)
-                else:
-                    failed += 1
+                for seq in outputs[seq_start:seq_end]:
+                    if len(all_rewrites[sample_idx]) >= num_rewrites:
+                        break
+                    decoded = self.tokenizer.decode(seq[prompt_len:], skip_special_tokens=True)
+                    cleaned = self._extract_code(decoded)
+                    if cleaned and self._is_valid_rewrite(cleaned, original):
+                        all_rewrites[sample_idx].append(cleaned)
+                        print(f"  [OK] sample {sample_idx} ({len(all_rewrites[sample_idx])}/{num_rewrites} collected)")
 
-            # Skip instead of pad - any failure discards the whole sample
-            if failed > 0:
-                reason = "All" if not sample_rewrites else f"{failed}/{num_rewrites}"
-                print(f"Warning: {reason} rewrites failed for sample {batch_idx}. Skipping.")
-                all_rewrites.append(None)
+            # Recompute which samples still need more rewrites
+            needs_more = [
+                i for i in range(len(code_list))
+                if len(all_rewrites[i]) < num_rewrites and attempt_counts[i] < max_attempts
+            ]
+
+        # Handle final results
+        result = []
+        for i, sample_rewrites in enumerate(all_rewrites):
+            original = code_list[i]
+            if not sample_rewrites:
+                print(f"Warning: No valid rewrites for sample {i} after {attempt_counts[i]} attempts. Skipping.")
+                result.append(None)
+            elif len(sample_rewrites) < num_rewrites:
+                print(f"Warning: Only {len(sample_rewrites)}/{num_rewrites} for sample {i}. Padding.")
+                while len(sample_rewrites) < num_rewrites:
+                    sample_rewrites.append(sample_rewrites[0])
+                result.append(sample_rewrites)
             else:
-                all_rewrites.append(sample_rewrites)
+                result.append(sample_rewrites)
 
-        return all_rewrites
+        return result
+    

@@ -2,8 +2,6 @@ import os
 os.makedirs("/dev/shm/.hf_cache", exist_ok=True)
 os.environ["HF_HOME"] = "/dev/shm/.hf_cache"
 
-import json
-import hashlib
 from tqdm import tqdm
 import pandas as pd
 from sklearn.metrics import roc_auc_score
@@ -16,29 +14,6 @@ import settings
 
 
 BATCH_SIZE_DEF = getattr(settings, "EVAL_BATCH_SIZE", 8)
-REWRITE_CACHE_DIR = "./rewrite_cache"
-
-
-def get_cache_path(variant_name, m, start):
-    """Unique cache file per (variant, m, batch_start)."""
-    key = f"{variant_name}_m{m}_batch{start}"
-    return os.path.join(REWRITE_CACHE_DIR, f"{key}.json")
-
-
-def load_cached_rewrites(variant_name, m, start):
-    path = get_cache_path(variant_name, m, start)
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            data = json.load(f)
-        return data["human"], data["ai"]
-    return None, None
-
-
-def save_cached_rewrites(variant_name, m, start, human_rewrites, ai_rewrites):
-    os.makedirs(REWRITE_CACHE_DIR, exist_ok=True)
-    path = get_cache_path(variant_name, m, start)
-    with open(path, "w") as f:
-        json.dump({"human": human_rewrites, "ai": ai_rewrites}, f)
 
 
 def compute_classification_metrics(non_synth_scores, synth_scores):
@@ -104,69 +79,14 @@ def run_evaluation():
     variant_results = []
     detailed_rows = []
 
+    # 4 configs: base and SimCSE for both model types.
+    # display_name is used consistently across all three output CSVs.
     test_configs = [
         ("graphcodebert", False, "GraphCodeBERT-BASE"),
         ("graphcodebert", True,  "GraphCodeBERT-SimCSE"),
         ("codet5",        False, "CodeT5-BASE"),
         ("codet5",        True,  "CodeT5-SimCSE"),
     ]
-
-    # ── Pre-generate all rewrites once, cache to disk ─────────────────────────
-    # This means the rewriter runs once per (variant, m) combination
-    # instead of once per (variant, m, model_config) — a 4x speedup.
-    print("\n" + "="*60)
-    print("PHASE 1: Generating rewrites (runs once, cached to disk)")
-    print("="*60)
-
-    for m in settings.NUM_REWRITES:
-        if m >= 8:
-            BATCH_SIZE = max(1, BATCH_SIZE_DEF // 4)
-        elif m >= 4:
-            BATCH_SIZE = max(2, BATCH_SIZE_DEF // 2)
-        else:
-            BATCH_SIZE = BATCH_SIZE_DEF
-
-        for variant_file in settings.VARIANT_FILES:
-            variant_name = os.path.basename(variant_file)
-
-            paired_data = load_paired_dataset(variant_file)
-            if not paired_data:
-                continue
-
-            n = len(paired_data)
-            all_cached = all(
-                os.path.exists(get_cache_path(variant_name, m, start))
-                for start in range(0, n, BATCH_SIZE)
-            )
-            if all_cached:
-                print(f"  ✓ Cache hit: {variant_name} m={m} (skipping rewrite)")
-                continue
-
-            print(f"\n  Rewriting: {variant_name} | m={m}")
-            for start in tqdm(range(0, n, BATCH_SIZE), desc=f"  {variant_name} m={m}", leave=False):
-                # Skip if already cached
-                if os.path.exists(get_cache_path(variant_name, m, start)):
-                    continue
-
-                batch = paired_data[start:start + BATCH_SIZE]
-                human_batch = [pair[0] for pair in batch]
-                ai_batch    = [pair[1] for pair in batch]
-
-                human_rewrites_batch = []
-                ai_rewrites_batch = []
-                rbs = getattr(settings, 'REWRITE_BATCH_SIZE', 8)
-                for rb_start in range(0, len(human_batch), rbs):
-                    human_rewrites_batch += rewriter.generate_rewrites_batch(human_batch[rb_start:rb_start+rbs], m)
-                    ai_rewrites_batch    += rewriter.generate_rewrites_batch(ai_batch[rb_start:rb_start+rbs], m)
-
-                save_cached_rewrites(variant_name, m, start, human_rewrites_batch, ai_rewrites_batch)
-
-    print("\n✓ All rewrites generated and cached.")
-
-    # ── Phase 2: Score with all 4 model configs using cached rewrites ─────────
-    print("\n" + "="*60)
-    print("PHASE 2: Scoring with all model configs (no rewriting)")
-    print("="*60)
 
     for model_name, use_simcse, display_name in test_configs:
         print(f"\n{'='*60}")
@@ -212,14 +132,8 @@ def run_evaluation():
                     human_batch = [pair[0] for pair in batch]
                     ai_batch    = [pair[1] for pair in batch]
 
-                    # Load from cache — no rewriting needed
-                    human_rewrites_batch, ai_rewrites_batch = load_cached_rewrites(
-                        variant_name, m, start
-                    )
-
-                    if human_rewrites_batch is None:
-                        print(f"  Warning: Cache miss for {variant_name} m={m} batch {start}. Skipping.")
-                        continue
+                    human_rewrites_batch = rewriter.generate_rewrites_batch(human_batch, m)
+                    ai_rewrites_batch    = rewriter.generate_rewrites_batch(ai_batch, m)
 
                     valid_indices = [
                         i for i in range(len(human_rewrites_batch))
@@ -245,24 +159,29 @@ def run_evaluation():
                     non_synth_scores.extend(human_scores)
                     synth_scores.extend(ai_scores)
 
+                    # ── Detailed per-sample rows ──────────────────────────────
                     for i in range(len(valid_human_batch)):
                         correct = ai_scores[i] > human_scores[i]
                         detailed_rows.append({
-                            "Model":               display_name,
+                            "Model":               display_name,   # e.g. "GraphCodeBERT-SimCSE"
                             "Variant":             variant_name,
                             "m":                   m,
                             "Original_Human_Code": valid_human_batch[i],
                             "Original_AI_Code":    valid_ai_batch[i],
-                            "Rewritten_Human_Code": " ||| ".join(valid_human_rewrites[i]),
+                            "Rewritten_Human_Code":" ||| ".join(valid_human_rewrites[i]),
                             "Rewritten_AI_Code":   " ||| ".join(valid_ai_rewrites[i]),
                             "Cosine_Sim_Human":    round(human_scores[i], 6),
                             "Cosine_Sim_AI":       round(ai_scores[i], 6),
+                            # True  = AI score > Human score (correct detection)
+                            # False = AI score <= Human score (wrong detection)
                             "Correct_Prediction":  correct,
                         })
+                    # ─────────────────────────────────────────────────────────
 
                 total_non_synth_scores.extend(non_synth_scores)
                 total_synth_scores.extend(synth_scores)
 
+                # Per-variant metrics
                 if non_synth_scores and synth_scores:
                     metrics = compute_classification_metrics(non_synth_scores, synth_scores)
                     variant_results.append({
@@ -290,6 +209,7 @@ def run_evaluation():
                         "Pairs": 0, "CorrectPairs": 0,
                     })
 
+            # Overall metrics for this (model config, m) combination
             if total_non_synth_scores and total_synth_scores:
                 totals_metrics = compute_classification_metrics(
                     total_non_synth_scores, total_synth_scores
@@ -320,7 +240,7 @@ def run_evaluation():
             else:
                 print(f"\n✗ No valid data for {display_name} with m={m}")
 
-    # ── Save results ──────────────────────────────────────────────────────────
+    # ── Save all three output files ───────────────────────────────────────────
     print("\n\n" + "="*60)
     print("SAVING RESULTS")
     print("="*60)
@@ -334,12 +254,14 @@ def run_evaluation():
         print("✓ Per-variant results saved to 'evaluation_variant_results.csv'")
 
     if not df_total.empty:
+        # Sort so BASE and SimCSE sit next to each other for easy comparison
         df_total = df_total.sort_values(["Model", "m"]).reset_index(drop=True)
         df_total.to_csv("./evaluation_results.csv", index=False)
         print("✓ Overall results saved to 'evaluation_results.csv'")
         print("\n--- FINAL SUMMARY ---")
         print(df_total.to_string(index=False))
 
+        # ── Print SimCSE improvement summary ─────────────────────────────────
         print(f"\n{'='*60}")
         print("SIMCSE IMPROVEMENT SUMMARY")
         print(f"{'='*60}")
@@ -358,6 +280,7 @@ def run_evaluation():
                         arrow = "↑" if diff > 0 else "↓" if diff < 0 else "="
                         print(f"  m={m_val}: BASE={float(b[0]):.4f} vs "
                               f"SimCSE={float(s[0]):.4f} ({arrow} {abs(diff):.4f})")
+        # ─────────────────────────────────────────────────────────────────────
     else:
         print("✗ No results to save - check your data and rewriter output")
 
@@ -365,6 +288,7 @@ def run_evaluation():
         df_detail.to_csv("./evaluation_detailed_predictions.csv", index=False)
         print(f"✓ Detailed predictions saved to 'evaluation_detailed_predictions.csv' "
               f"({len(df_detail):,} rows)")
+    # ─────────────────────────────────────────────────────────────────────────
 
 
 if __name__ == "__main__":
