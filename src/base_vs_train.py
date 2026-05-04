@@ -182,7 +182,7 @@ def run_evaluation_comparison():
         
         # Save to CSV
         df_results.to_csv("./evaluation_base_vs_simcse.csv", index=False)
-        print("✓ Results saved to 'evaluation_base_vs_simcse.csv'")
+        print("Results saved to 'evaluation_base_vs_simcse.csv'")
         
         # Print comparison summary
         print(f"\n{'='*70}")
