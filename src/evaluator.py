@@ -20,7 +20,6 @@ REWRITE_CACHE_DIR = "./rewrite_cache"
 
 
 def get_cache_path(variant_name, m, start):
-    """Unique cache file per (variant, m, batch_start)."""
     key = f"{variant_name}_m{m}_batch{start}"
     return os.path.join(REWRITE_CACHE_DIR, f"{key}.json")
 
@@ -111,9 +110,6 @@ def run_evaluation():
         ("codet5",        True,  "CodeT5-SimCSE"),
     ]
 
-    # ── Pre-generate all rewrites once, cache to disk ─────────────────────────
-    # This means the rewriter runs once per (variant, m) combination
-    # instead of once per (variant, m, model_config) — a 4x speedup.
     print("\n" + "="*60)
     print("PHASE 1: Generating rewrites (runs once, cached to disk)")
     print("="*60)
@@ -139,7 +135,7 @@ def run_evaluation():
                 for start in range(0, n, BATCH_SIZE)
             )
             if all_cached:
-                print(f"  ✓ Cache hit: {variant_name} m={m} (skipping rewrite)")
+                print(f"Cache hit: {variant_name} m={m} (skipping rewrite)")
                 continue
 
             print(f"\n  Rewriting: {variant_name} | m={m}")
@@ -161,7 +157,7 @@ def run_evaluation():
 
                 save_cached_rewrites(variant_name, m, start, human_rewrites_batch, ai_rewrites_batch)
 
-    print("\n✓ All rewrites generated and cached.")
+    print("\nAll rewrites generated and cached.")
 
     # ── Phase 2: Score with all 4 model configs using cached rewrites ─────────
     print("\n" + "="*60)
@@ -176,7 +172,7 @@ def run_evaluation():
         try:
             detector = CodeDetector(model_type=model_name, use_simcse=use_simcse)
         except Exception as e:
-            print(f"❌ Failed to load {display_name}: {e}")
+            print(f"Failed to load {display_name}: {e}")
             continue
 
         for m in settings.NUM_REWRITES:
@@ -212,7 +208,7 @@ def run_evaluation():
                     human_batch = [pair[0] for pair in batch]
                     ai_batch    = [pair[1] for pair in batch]
 
-                    # Load from cache — no rewriting needed
+                    #load from cache
                     human_rewrites_batch, ai_rewrites_batch = load_cached_rewrites(
                         variant_name, m, start
                     )
@@ -278,11 +274,11 @@ def run_evaluation():
                         "Pairs":            metrics["pairwise_count"],
                         "CorrectPairs":     metrics["correct_pairwise"],
                     })
-                    print(f"  ✓ {variant_name}: {metrics['pairwise_count']} pairs, "
+                    print(f" {variant_name}: {metrics['pairwise_count']} pairs, "
                           f"{metrics['correct_pairwise']} correct "
                           f"(Acc: {metrics['Accuracy']:.4f}, AUROC: {metrics['AUROC']:.4f})")
                 else:
-                    print(f"  ✗ {variant_name}: No valid pairs generated")
+                    print(f" {variant_name}: No valid pairs generated")
                     variant_results.append({
                         "Model": display_name, "m": m, "Variant": variant_name,
                         "AUROC": 0.0, "Accuracy": 0.0, "Pairwise_Accuracy": 0.0,
@@ -318,9 +314,9 @@ def run_evaluation():
                 print(f"  Pairs:             {totals_metrics['pairwise_count']}")
                 print(f"  Correct:           {totals_metrics['correct_pairwise']}")
             else:
-                print(f"\n✗ No valid data for {display_name} with m={m}")
+                print(f"\nNo valid data for {display_name} with m={m}")
 
-    # ── Save results ──────────────────────────────────────────────────────────
+    #sve results
     print("\n\n" + "="*60)
     print("SAVING RESULTS")
     print("="*60)
@@ -331,12 +327,12 @@ def run_evaluation():
 
     if not df_variant.empty:
         df_variant.to_csv("./evaluation_variant_results.csv", index=False)
-        print("✓ Per-variant results saved to 'evaluation_variant_results.csv'")
+        print("Per-variant results saved to 'evaluation_variant_results.csv'")
 
     if not df_total.empty:
         df_total = df_total.sort_values(["Model", "m"]).reset_index(drop=True)
         df_total.to_csv("./evaluation_results.csv", index=False)
-        print("✓ Overall results saved to 'evaluation_results.csv'")
+        print("Overall results saved to 'evaluation_results.csv'")
         print("\n--- FINAL SUMMARY ---")
         print(df_total.to_string(index=False))
 
@@ -359,11 +355,11 @@ def run_evaluation():
                         print(f"  m={m_val}: BASE={float(b[0]):.4f} vs "
                               f"SimCSE={float(s[0]):.4f} ({arrow} {abs(diff):.4f})")
     else:
-        print("✗ No results to save - check your data and rewriter output")
+        print("No results to save - check your data and rewriter output")
 
     if not df_detail.empty:
         df_detail.to_csv("./evaluation_detailed_predictions.csv", index=False)
-        print(f"✓ Detailed predictions saved to 'evaluation_detailed_predictions.csv' "
+        print(f"Detailed predictions saved to 'evaluation_detailed_predictions.csv' "
               f"({len(df_detail):,} rows)")
 
 

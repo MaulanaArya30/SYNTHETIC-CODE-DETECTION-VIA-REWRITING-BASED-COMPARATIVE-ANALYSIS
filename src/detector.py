@@ -17,9 +17,9 @@ class CodeDetector:
                 model_path = settings.CODET5_MODEL_NAME
                 print(f"Loading BASE CodeT5 from {model_path}...")
             
-            # Check if SimCSE model exists
+            #check if SimCSE ver exists
             if use_simcse and not os.path.exists(model_path):
-                print(f"⚠️  SimCSE model not found at {model_path}")
+                print(f" SimCSE model not found at {model_path}")
                 print(f"   Falling back to base model: {settings.CODET5_MODEL_NAME}")
                 model_path = settings.CODET5_MODEL_NAME
                 self.use_simcse = False
@@ -36,7 +36,7 @@ class CodeDetector:
                 model_path = settings.GCB_MODEL_NAME
                 print(f"Loading BASE GraphCodeBERT from {model_path}...")
             
-            # Check if SimCSE model exists
+            #check if SimCSE ver exists
             if use_simcse and not os.path.exists(model_path):
                 print(f"SimCSE model not found at {model_path}")
                 print(f"Falling back to base model: {settings.GCB_MODEL_NAME}")
@@ -54,7 +54,7 @@ class CodeDetector:
         self.encoder.eval()
         
         model_type_str = f"{model_type.upper()} ({'SimCSE' if self.use_simcse else 'BASE'})"
-        print(f"✓ {model_type_str} model loaded successfully")
+        print(f"{model_type_str} model loaded successfully")
 
     #single emb 
     @torch.no_grad()

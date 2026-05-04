@@ -15,7 +15,7 @@ class CodeRewriter:
             settings.REWRITER_MODEL_NAME,
             trust_remote_code=True,
             torch_dtype=torch.float16,
-            device_map="auto",   # loads directly to GPU, avoids double-memory spike from .to()
+            device_map="auto",  
         )
         self.model.eval()
 
@@ -25,7 +25,6 @@ class CodeRewriter:
         print(f'{settings.REWRITER_MODEL_NAME} loaded successfully.')
 
     def _make_prompt(self, code):
-        """Use the model's official chat template for best instruction following."""
         messages = [
             {
                 "role": "user",
@@ -44,7 +43,6 @@ class CodeRewriter:
         )
 
     def _extract_code(self, text):
-        """Extract code from triple-backtick block."""
         if "```" in text:
             parts = text.split("```")
             if len(parts) > 1:
@@ -58,11 +56,6 @@ class CodeRewriter:
         return text if text else None
 
     def _is_valid_rewrite(self, rewrite, original):
-        """
-        Sanity checks - reject outputs that would pollute similarity scores.
-        Returns False if the rewrite is empty, too short, identical to the
-        original, or a repetition loop.
-        """
         if not rewrite or len(rewrite.strip()) < 10:
             print(f"  [FAIL] Too short or empty: len={len(rewrite.strip()) if rewrite else 0}")
             return False
@@ -90,12 +83,11 @@ class CodeRewriter:
         self.tokenizer.padding_side = "left"
         CANDIDATES_PER_ATTEMPT = min(num_rewrites * 2, 8)
         all_rewrites = [[] for _ in range(len(code_list))]
-        attempt_counts = [0] * len(code_list)  # track attempts per sample
+        attempt_counts = [0] * len(code_list) 
         max_attempts = num_rewrites * 2
-        needs_more = list(range(len(code_list)))  # indices still needing rewrites
+        needs_more = list(range(len(code_list)))
 
         while needs_more:
-            # Filter to only samples that haven't exceeded max_attempts
             needs_more = [
                 i for i in needs_more
                 if len(all_rewrites[i]) < num_rewrites and attempt_counts[i] < max_attempts
@@ -103,11 +95,10 @@ class CodeRewriter:
             if not needs_more:
                 break
 
-            # Increment attempt count for all samples in this round
             for i in needs_more:
                 attempt_counts[i] += 1
 
-            # Build batch from all samples that still need rewrites
+            #build batch from all samples that still need rewrites
             batch_originals = [code_list[i] for i in needs_more]
             batch_prompts = [self._make_prompt(c) for c in batch_originals]
 
@@ -134,7 +125,6 @@ class CodeRewriter:
                     eos_token_id=self.tokenizer.eos_token_id,
                 )
 
-            # outputs shape: (len(needs_more) * CANDIDATES_PER_ATTEMPT, seq_len)
             prompt_len = inputs.input_ids.shape[1]
 
             for batch_pos, sample_idx in enumerate(needs_more):
@@ -151,13 +141,13 @@ class CodeRewriter:
                         all_rewrites[sample_idx].append(cleaned)
                         print(f"  [OK] sample {sample_idx} ({len(all_rewrites[sample_idx])}/{num_rewrites} collected)")
 
-            # Recompute which samples still need more rewrites
+            #recompute which samples still need more rewrites
             needs_more = [
                 i for i in range(len(code_list))
                 if len(all_rewrites[i]) < num_rewrites and attempt_counts[i] < max_attempts
             ]
 
-        # Handle final results
+        #final results
         result = []
         for i, sample_rewrites in enumerate(all_rewrites):
             original = code_list[i]

@@ -13,7 +13,6 @@ BATCH_SIZE_DEF = getattr(settings, "EVAL_BATCH_SIZE", 8)
 
 
 def compute_classification_metrics(non_synth_scores, synth_scores):
-    """Compute metrics based on pairwise comparison."""
     n_pairs = min(len(non_synth_scores), len(synth_scores))
     
     if n_pairs == 0:
@@ -27,7 +26,6 @@ def compute_classification_metrics(non_synth_scores, synth_scores):
     non_synth_scores = non_synth_scores[:n_pairs]
     synth_scores = synth_scores[:n_pairs]
     
-    # AUROC
     labels = [0] * len(non_synth_scores) + [1] * len(synth_scores)
     scores = non_synth_scores + synth_scores
     
@@ -39,7 +37,7 @@ def compute_classification_metrics(non_synth_scores, synth_scores):
             print(f"Warning: AUROC calculation failed: {e}")
             auroc = 0.0
     
-    # Pairwise comparison
+    #Pairwise
     correct_pairwise = sum(1 for h, a in zip(non_synth_scores, synth_scores) if a > h)
     pairwise_accuracy = correct_pairwise / n_pairs if n_pairs > 0 else 0.0
     
@@ -59,7 +57,7 @@ def run_evaluation_comparison():
     rewriter = CodeRewriter()
     final_results = []
 
-    # Test configurations: (model_name, use_simcse)
+    #configurations: (model_name, use_simcse)
     test_configs = [
         ("graphcodebert", False, "GraphCodeBERT-BASE"),
         ("graphcodebert", True, "GraphCodeBERT-SimCSE"),
@@ -72,7 +70,7 @@ def run_evaluation_comparison():
         print(f"Testing: {display_name}")
         print(f"{'='*70}")
         
-        # Initialize detector
+        #Initialize
         try:
             detector = CodeDetector(model_type=model_name, use_simcse=use_simcse)
         except Exception as e:
@@ -84,7 +82,7 @@ def run_evaluation_comparison():
             print(f"{display_name} | m={m}")
             print(f"{'─'*60}")
 
-            # Adjust batch size
+            #adjust batch size
             if m >= 8:
                 BATCH_SIZE = max(1, BATCH_SIZE_DEF // 4)
             elif m >= 4:
@@ -107,7 +105,7 @@ def run_evaluation_comparison():
                 non_synth_scores = []
                 synth_scores = []
 
-                # Process in batches
+                #batches
                 n = len(paired_data)
                 for start in tqdm(range(0, n, BATCH_SIZE), desc=f"  {variant_name}", leave=False):
                     batch = paired_data[start:start + BATCH_SIZE]
@@ -118,7 +116,7 @@ def run_evaluation_comparison():
                     human_rewrites_batch = rewriter.generate_rewrites_batch(human_batch, m)
                     ai_rewrites_batch = rewriter.generate_rewrites_batch(ai_batch, m)
 
-                    # Filter valid pairs
+                    #valid pairs
                     valid_indices = [
                         i for i in range(len(human_rewrites_batch))
                         if human_rewrites_batch[i] and ai_rewrites_batch[i]
@@ -146,7 +144,7 @@ def run_evaluation_comparison():
                 total_non_synth_scores.extend(non_synth_scores)
                 total_synth_scores.extend(synth_scores)
 
-            # Compute metrics
+            #metrics
             if total_non_synth_scores and total_synth_scores:
                 metrics = compute_classification_metrics(
                     total_non_synth_scores, total_synth_scores
@@ -163,13 +161,13 @@ def run_evaluation_comparison():
                 }
                 final_results.append(result)
 
-                print(f"  ✓ AUROC: {metrics['AUROC']:.4f} | "
+                print(f"AUROC: {metrics['AUROC']:.4f} | "
                       f"Accuracy: {metrics['Accuracy']:.4f} | "
                       f"Pairs: {metrics['pairwise_count']}")
             else:
-                print(f"  ❌ No valid data")
+                print(f"No valid data")
 
-    # Save and display results
+    #Save and display results
     print(f"\n\n{'='*70}")
     print("FINAL COMPARISON RESULTS")
     print(f"{'='*70}\n")
@@ -177,7 +175,6 @@ def run_evaluation_comparison():
     df_results = pd.DataFrame(final_results)
     
     if not df_results.empty:
-        # Sort for better readability
         df_results = df_results.sort_values(['Model', 'm'])
         
         print(df_results.to_string(index=False))
@@ -214,7 +211,7 @@ def run_evaluation_comparison():
                         print(f"  m={m_val}: BASE={base_val:.4f} vs SimCSE={simcse_val:.4f} "
                               f"({symbol} {abs(improvement):.4f})")
     else:
-        print("❌ No results to display")
+        print("No results to display")
 
 
 if __name__ == "__main__":
