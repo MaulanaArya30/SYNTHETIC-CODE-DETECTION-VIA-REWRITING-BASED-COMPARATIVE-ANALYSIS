@@ -136,7 +136,7 @@ def train(model_type):
     encoder_model = encoder_model.to(settings.DEVICE)
 
     projection_head = MLPProjectionHead(hidden_size).to(settings.DEVICE)
-    print(f"  MLP projection head: {hidden_size} → ReLU → {hidden_size}")
+    print(f"  MLP projection head: {hidden_size} -> ReLU -> {hidden_size}")
     
     print("Loading training data...")
     code_samples = load_simcse_training_data()
@@ -180,7 +180,6 @@ def train(model_type):
         num_warmup_steps=warmup_steps,
         num_training_steps=total_optimizer_steps,
     )
-    # ─────────────────────────────────────────────────────────────────────────
 
     effective_batch_size = settings.SIMCSE_BATCH_SIZE * gradient_accumulation_steps
 
@@ -230,7 +229,6 @@ def train(model_type):
             cls_2 = get_cls_embedding(model_type, outputs_2)
             proj_1 = projection_head(cls_1)
             proj_2 = projection_head(cls_2)
-            # ─────────────────────────────────────────────────────────────
 
             loss = simcse_loss(proj_1, proj_2, temperature=0.1)
 

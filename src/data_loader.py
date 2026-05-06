@@ -34,7 +34,6 @@ def load_paired_dataset(file_path):
 
 #simcse training data list
 def load_simcse_training_data():
-    import pandas as pd
     dataset = pd.read_csv('data/embedding_train.csv')
     print("Loading local embeddingtraining data from CSV files...")
     print("Available columns:", dataset.columns.tolist())
