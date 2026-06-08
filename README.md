@@ -176,9 +176,3 @@ If you use this code or build on this work, please cite:
 - Pan et al. (2024). [Assessing AI Detectors in Identifying AI-Generated Code.](https://doi.org/10.1145/3639474.3640068) *ICSE-SEET 2024.*
 - Wang et al. (2021). [CodeT5: Identifier-aware Unified Pre-trained Encoder-Decoder Models.](https://doi.org/10.18653/v1/2021.emnlp-main.685) *EMNLP 2021.*
 - Gao et al. (2021). [SimCSE: Simple Contrastive Learning of Sentence Embeddings.](https://doi.org/10.18653/v1/2021.emnlp-main.552) *EMNLP 2021.*
-
----
-
-## License
-
-This project is for academic research purposes. See [LICENSE](LICENSE) for details.
